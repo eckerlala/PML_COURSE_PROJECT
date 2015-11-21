@@ -1,0 +1,186 @@
+---
+title: "Practical Machine Learning Writeup"
+author: "Wolfgang Ecker-Lala"
+date: "Friday, November 20, 2015"
+output: html_document
+---
+
+#Introduction
+A group of enthusiasts who take measurements about themselves regularly to improve their health provided data collected with devices like **Jawbone Up**, **Nike FuelBand** and **Fitbit**. The data and more information is available on [http://groupware.les.inf.puc-rio.br/har](http://groupware.les.inf.puc-rio.br/har).
+
+Goal of this course project is to predict the manner in which they did the exercise. Therefore a training dataset has been provided at [https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv). Based on this dataset the variable *classe* should be predicted.
+
+After some prediction models could be found they could be tested using following dataset:
+[https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv)
+
+#Data Loading, Manipulation & Exploration
+After downloading the training and testing datasets into a user defined working directory the data can be loaded using
+
+```{r}
+training <- read.table("pml-training.csv",stringsAsFactors=FALSE,sep=",",header=TRUE,na.strings = c("NA", "#DIV/0!", ""))
+```
+The structur of the training dataset is following:
+```{r}
+str(training)
+```
+We see that it is a very large dataframe with dimension
+```{r}
+dim(training)
+```
+
+The frequencies of exercises not dependent on the user is
+```{r}
+table(training$classe)
+```
+
+The frequencies of exercises dependet on each user is
+```{r}
+table(training$user_name,training$classe)
+```
+
+It is not hard to see that exercise **A** is the preferred exercise.
+
+Nevertheless we do not intend to make a user dependent prediction and so the first 6 columns can be removed.
+```{r}
+trainData<-training[,7:dim(training)[2]]
+```
+At the end columns which have mostly value **NA** will be removed.
+```{r}
+keepColumns<-apply(!is.na(trainData), 2, sum)==(dim(training)[1])
+trainData<-trainData[,keepColumns]
+```
+So the new training dataset has following dimension:
+```{r}
+dim(trainData)
+```
+For **cross validation purposes** the trainingset has to be splitted into two sets.
+```{r,warning=FALSE}
+library(caret)
+
+set.seed(4711)
+trainIndex <- createDataPartition(y=trainData$classe, p=0.60, list=FALSE)
+trainData1  <- trainData[trainIndex,]
+trainData2  <- trainData[-trainIndex,]
+
+dim(trainData1)
+dim(trainData2)
+```
+In the next step *"near zero covariates"* will be removed.
+```{r}
+nzvColumns <- nearZeroVar(trainData1)
+if(length(nzvColumns) > 0) {
+  trainData1 <- trainData1[, -nzvColumns]
+  trainData2 <- trainData2[, -nzvColumns]
+}
+dim(trainData1)
+```
+##Simple Correlation Analysis
+A simple correlation analysis gives following result:
+```{r}
+corMatrix<-cor(trainData1[,1:dim(trainData1)[2]-1])
+diag(corMatrix)<-0
+colOfInterest <- which(corMatrix>.8,arr.ind=TRUE)
+dim(colOfInterest)
+
+corrAttributes <- matrix(c(rownames(colOfInterest),colnames(corMatrix[,colOfInterest[,2]])),nrow=dim(colOfInterest)[1],ncol=2,byrow=FALSE)
+corrAttributes
+```
+We see that *"yaw_belt"* and *"roll_belt"* are highly correlated.
+
+##Principal Component Analysis
+The **"Principal Component Analysis"** shows that only 8 predictors are necessary.
+```{r}
+prComponents<-prcomp(trainData1[,1:dim(trainData1)[2]-1])
+plot(prComponents,type="l")
+```
+
+#Modeling
+Out of the gained knowledge from the analysis it is time to build the model. I have chosen the **RANDOM FOREST** algorithm for running the prediction.
+
+```{r,warning=FALSE}
+library(randomForest)
+library(caret)
+set.seed(4711)
+preProc<-preProcess(trainData1[,1:dim(trainData1)[2]-1],method="pca",pcaComp=8)
+trainPC<-predict(preProc,trainData1[,1:dim(trainData1)[2]-1])
+```
+
+As the calculation lasted several hours I show the training calculation as text.
+So next step is
+
+**fitModel <- train(trainData1$classe~.,data=trainPC,method="rf",prox=TRUE,allowPrallel=TRUE)**
+
+And than I saved the model in order to be able to reuse it.
+
+**saveRDS(fitModel, "pml_modelRF.Rds")**
+
+##CROSS-VALIDATION
+In order to test how accurate the model is the second dataset has been used.
+
+```{r}
+fitModel <- readRDS("pml_modelRF.Rds")
+
+testPC<-predict(preProc,trainData2[,1:dim(trainData1)[2]-1])
+evalResult<-predict(fitModel,testPC)
+```
+
+The confusion matrix shows the accuracy of the chosen model.
+```{r}
+confusionMatrix(trainData2$classe,evalResult)
+```
+
+
+##OUT-OF-SAMPLE ERROR RATE
+
+First the function missClassification was defined in order to provide an easy way to calculate the out-of-sample error rate several times.
+
+```{r}
+missClassification <- function(values, predicted) {
+  sum(predicted != values) / length(values)
+}
+```
+
+And the calculation of the out-of-sample error rate shows
+
+```{r}
+OOS_errRate <- missClassification(trainData2$classe, evalResult)
+OOS_errRate
+```
+
+that the out-of-sample error rate is quite good.
+
+#SUBMISSION
+At the end the testing dataset for submission was predicted.
+
+```{r}
+testPC2<-predict(preProc,testData[,1:dim(testData)[2]-1])
+evalResultTest<-predict(fitModel,testPC2)
+
+testData$classe <- evalResultTest
+
+```
+A function for creating the resultset file was defined.
+
+```{r}
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+```
+
+The result was prepared for submission.
+
+```{r}
+submitData <- data.frame(problem_id = testData$problem_id, classe = evalResultTest)
+```
+
+The file was created.
+
+```{r}
+write.csv(submitData, file = "./submitfiles/pml_coursera_submission.csv", row.names = FALSE)
+```
+
+And finally I got **20 of 20** points.
